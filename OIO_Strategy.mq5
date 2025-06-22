@@ -691,7 +691,7 @@ string TradeRetcodeToString(int retcode) // Changed uint to int
       case TRADE_RETCODE_ONLY_REAL:               return("TRADE_RETCODE_ONLY_REAL (Operation is allowed only for live accounts)");
       case TRADE_RETCODE_LIMIT_ORDERS:            return("TRADE_RETCODE_LIMIT_ORDERS (The number of pending orders has reached the limit)");
       case TRADE_RETCODE_LIMIT_VOLUME:            return("TRADE_RETCODE_LIMIT_VOLUME (The volume of orders and positions for the symbol has reached the limit)");
-      case TRADE_RETCODE_INVALID_ACCOUNT:         return("TRADE_RETCODE_INVALID_ACCOUNT (Invalid account or account disabled)");
+      // case TRADE_RETCODE_INVALID_ACCOUNT:      return("TRADE_RETCODE_INVALID_ACCOUNT (Invalid account or account disabled)"); // Temporarily removed due to compilation issues
       default:                                    return("UNKNOWN_TRADE_RETCODE ("+(string)retcode+")");
      }
   }
