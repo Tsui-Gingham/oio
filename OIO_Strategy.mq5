@@ -170,6 +170,9 @@ void UpdateOIOStructure()
     double high2 = rates[2].high, low2 = rates[2].low;
     double high3 = rates[1].high, low3 = rates[1].low;
 
+    PrintFormat("Bar Data for OIO Check: B1(H:%.*f L:%.*f), B2(H:%.*f L:%.*f), B3(H:%.*f L:%.*f)",
+        _Digits, high1, _Digits, low1, _Digits, high2, _Digits, low2, _Digits, high3, _Digits, low3);
+
     // OIO pattern conditions:
     // 1. Bar1's High >= Bar2's High AND Bar3's High >= Bar2's High
     // 2. Bar1's Low <= Bar2's Low AND Bar3's Low <= Bar2's Low
@@ -195,9 +198,12 @@ void UpdateOIOStructure()
 
         Print("OIO Pattern Identified: ID ", currentOIO.id, ", Time: ", TimeToString(currentOIO.startTime), " to ", TimeToString(rates[1].time));
         Print("OIO Details - High: ", DoubleToString(currentOIO.high, _Digits), ", Low: ", DoubleToString(currentOIO.low, _Digits), ", Mid: ", DoubleToString(currentOIO.midPoint, _Digits));
+        Print("OIO Conditions Met. Proceeding to place orders for OIO ID: ", currentOIO.id);
 
         DrawOIORectangle(); // Mark the OIO pattern on the chart
         PlaceOIOOrders();   // Proceed to place initial pending orders
+    } else {
+        // Print("OIO conditions not met for the last 3 bars.");
     }
 }
 
@@ -212,6 +218,10 @@ void PlaceOIOOrders()
     string symbolName = _Symbol;
     double tickSize = SymbolInfoDouble(symbolName, SYMBOL_TRADE_TICK_SIZE);
     int digits = (int)SymbolInfoInteger(symbolName, SYMBOL_DIGITS);
+    double point = SymbolInfoDouble(symbolName, SYMBOL_POINT);
+    long stopsLevel = SymbolInfoInteger(symbolName, SYMBOL_TRADE_STOPS_LEVEL);
+
+    PrintFormat("PlaceOIOOrders for ID %d: TickSize=%.*f, Point=%.*f, StopsLevel=%d points", currentOIO.id, digits, tickSize, digits, point, stopsLevel);
 
     if(tickSize == 0) { Print("Error: Could not retrieve tick size for ", symbolName, ". Cannot place OIO orders."); return; }
 
@@ -225,9 +235,30 @@ void PlaceOIOOrders()
     double sellTakeProfit  = NormalizeDouble(sellEntryPrice - InpTakeProfitTicks * tickSize, digits);
     double sellStopLoss    = NormalizeDouble(currentOIO.high + tickSize, digits); // SL for Sell is OIO High + 1 tick
 
+    PrintFormat("Buy Limit Params: Entry=%.*f, SL=%.*f (Dist: %.1f pts), TP=%.*f (Dist: %.1f pts)", digits, buyEntryPrice, digits, buyStopLoss, MathAbs(buyEntryPrice-buyStopLoss)/point, digits, buyTakeProfit, MathAbs(buyEntryPrice-buyTakeProfit)/point);
+    PrintFormat("Sell Limit Params: Entry=%.*f, SL=%.*f (Dist: %.1f pts), TP=%.*f (Dist: %.1f pts)", digits, sellEntryPrice, digits, sellStopLoss, MathAbs(sellEntryPrice-sellStopLoss)/point, digits, sellTakeProfit, MathAbs(sellEntryPrice-sellTakeProfit)/point);
+
     // Validate SL/TP prices against entry prices
     if (buyStopLoss >= buyEntryPrice || buyTakeProfit <= buyEntryPrice) { PrintFormat("Invalid SL/TP for Buy Limit: E=%.*f, SL=%.*f, TP=%.*f",digits,buyEntryPrice,digits,buyStopLoss,digits,buyTakeProfit); ObjectDelete(0,"OIO_Rect_" + (string)currentOIO.id); return; }
     if (sellStopLoss <= sellEntryPrice || sellTakeProfit >= sellEntryPrice) { PrintFormat("Invalid SL/TP for Sell Limit: E=%.*f, SL=%.*f, TP=%.*f",digits,sellEntryPrice,digits,sellStopLoss,digits,sellTakeProfit); ObjectDelete(0,"OIO_Rect_" + (string)currentOIO.id); return; }
+
+    // Validate against SYMBOL_TRADE_STOPS_LEVEL
+    // For Buy orders, SL must be current price (or entry for pending) - StopsLevel * Point or lower. TP must be current price + StopsLevel * Point or higher.
+    // For Buy Limit, SL must be entry_price - StopsLevel*Point or lower. TP must be entry_price + StopsLevel*Point or higher.
+    if (stopsLevel > 0) {
+        if (MathAbs(buyEntryPrice - buyStopLoss) < stopsLevel * point) {
+            PrintFormat("Buy StopLoss distance (%.1f points) is less than StopsLevel (%d points). Order may be rejected.", MathAbs(buyEntryPrice-buyStopLoss)/point, stopsLevel);
+        }
+        if (MathAbs(buyEntryPrice - buyTakeProfit) < stopsLevel * point) {
+             PrintFormat("Buy TakeProfit distance (%.1f points) is less than StopsLevel (%d points). Order may be rejected.", MathAbs(buyEntryPrice-buyTakeProfit)/point, stopsLevel);
+        }
+        if (MathAbs(sellEntryPrice - sellStopLoss) < stopsLevel * point) {
+            PrintFormat("Sell StopLoss distance (%.1f points) is less than StopsLevel (%d points). Order may be rejected.", MathAbs(sellEntryPrice-sellStopLoss)/point, stopsLevel);
+        }
+        if (MathAbs(sellEntryPrice - sellTakeProfit) < stopsLevel * point) {
+             PrintFormat("Sell TakeProfit distance (%.1f points) is less than StopsLevel (%d points). Order may be rejected.", MathAbs(sellEntryPrice-sellTakeProfit)/point, stopsLevel);
+        }
+    }
 
     long ticket;
 
@@ -272,14 +303,21 @@ long SendPendingOrder(ENUM_ORDER_TYPE type, double price, double sl, double tp, 
     request.type_filling = ORDER_FILLING_FOK; // Fill Or Kill: entire order or none
     request.comment = comment + " ID " + (string)currentOIO.id;
 
-    Print("Attempting to place pending order: ", EnumToString(type), " Price=", DoubleToString(price,_Digits), " SL=", DoubleToString(sl,_Digits), " TP=", DoubleToString(tp,_Digits));
-    if(!OrderSend(request,result)) { Print("OrderSend failed for pending order: ", GetLastError(), " (Server RetCode:",result.retcode,") - ", result.comment); return 0; }
+    Print("Attempting to place pending order: ", EnumToString(type), " Price=", DoubleToString(price,_Digits), " SL=", DoubleToString(sl,_Digits), " TP=", DoubleToString(tp,_Digits), " Comment: ", request.comment);
+    if(!OrderSend(request,result)) {
+        Print("OrderSend call failed for pending order '",request.comment,"'. Error: ", GetLastError(), " (OS Error). Server RetCode from result struct (if available):",result.retcode);
+        return 0;
+    }
 
-    if(result.retcode == TRADE_RETCODE_DONE || result.retcode == TRADE_RETCODE_PLACED) { // Success codes
-        Print("Pending order placed successfully. Ticket: ", (long)result.order, ". Server RetCode: ", result.retcode);
+    // Always print retcode and comment from server for diagnostics
+    Print("OrderSend for '",request.comment,"' - Server Response: RetCode=", result.retcode, " (", TradeRetcodeToString(result.retcode), "), Comment='", result.comment,
+          "', OrderTicket=", (long)result.order, ", Price=", DoubleToString(result.price,_Digits), ", Volume=", DoubleToString(result.volume,2));
+
+    if(result.retcode == TRADE_RETCODE_DONE || result.retcode == TRADE_RETCODE_PLACED) { // Standard success codes for pending orders
+        Print("Pending order '",request.comment,"' placed successfully. Ticket: ", (long)result.order);
         return (long)result.order;
     } else {
-        Print("Pending order placement request returned non-success: ",result.retcode," - ",result.comment);
+        Print("Pending order '",request.comment,"' placement request returned non-success code: ", result.retcode);
         return 0;
     }
 }
@@ -382,6 +420,11 @@ void PlaceChaseOrder()
 
     double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
     int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+    long stopsLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+
+    PrintFormat("PlaceChaseOrder for OIO ID %d: MidPoint=%.*f, StopsLevel=%d points", currentOIO.id, digits, currentOIO.midPoint, stopsLevel);
+
     double entryPrice = currentOIO.midPoint; // Midpoint already normalized
     double stopLoss = 0, takeProfit = 0;
     ENUM_ORDER_TYPE orderType = WRONG_VALUE;
@@ -394,14 +437,22 @@ void PlaceChaseOrder()
         orderType = ORDER_TYPE_BUY_LIMIT;
         stopLoss = firstOrderSL;
         takeProfit = NormalizeDouble(entryPrice + InpTakeProfitTicks * tickSize, digits); // Temporary TP
+        PrintFormat("Chase Buy Limit Params: Entry=%.*f, SL=%.*f (Dist: %.1f pts), TP=%.*f (Dist: %.1f pts)", digits, entryPrice, digits, stopLoss, (stopLoss==0)?0:MathAbs(entryPrice-stopLoss)/point, digits, takeProfit, MathAbs(entryPrice-takeProfit)/point);
         if (stopLoss !=0 && stopLoss >= entryPrice) { PrintFormat("Chase Buy SL (%.*f) invalid vs Entry (%.*f)",digits,stopLoss,digits,entryPrice); return; }
         if (takeProfit <= entryPrice) { PrintFormat("Chase Buy TP (%.*f) invalid vs Entry (%.*f)",digits,takeProfit,digits,entryPrice); return; }
+         if (stopsLevel > 0 && stopLoss != 0 && MathAbs(entryPrice - stopLoss) < stopsLevel * point) {
+            PrintFormat("Chase Buy SL distance (%.1f points) is less than StopsLevel (%d points).", MathAbs(entryPrice-stopLoss)/point, stopsLevel);
+        }
     } else { // Chase order is a Sell Limit
         orderType = ORDER_TYPE_SELL_LIMIT;
         stopLoss = firstOrderSL;
         takeProfit = NormalizeDouble(entryPrice - InpTakeProfitTicks * tickSize, digits);
+        PrintFormat("Chase Sell Limit Params: Entry=%.*f, SL=%.*f (Dist: %.1f pts), TP=%.*f (Dist: %.1f pts)", digits, entryPrice, digits, stopLoss, (stopLoss==0)?0:MathAbs(entryPrice-stopLoss)/point, digits, takeProfit, MathAbs(entryPrice-takeProfit)/point);
         if (stopLoss != 0 && stopLoss <= entryPrice) { PrintFormat("Chase Sell SL (%.*f) invalid vs Entry (%.*f)",digits,stopLoss,digits,entryPrice); return; }
         if (takeProfit >= entryPrice) { PrintFormat("Chase Sell TP (%.*f) invalid vs Entry (%.*f)",digits,takeProfit,digits,entryPrice); return; }
+        if (stopsLevel > 0 && stopLoss != 0 && MathAbs(entryPrice - stopLoss) < stopsLevel * point) {
+            PrintFormat("Chase Sell SL distance (%.1f points) is less than StopsLevel (%d points).", MathAbs(entryPrice-stopLoss)/point, stopsLevel);
+        }
     }
 
     // Simple check for limit order price relative to current market (can be improved)
@@ -601,7 +652,47 @@ bool IsNewBar()
 
 //+------------------------------------------------------------------+
 //| Helper function to get the minimum stop level for the symbol.    |
-//| (Currently not actively used for SL/TP placement logic but available) |
 //+------------------------------------------------------------------+
-int GetMinStopLevel() { return((int)SymbolInfoInteger(_Symbol,SYMBOL_TRADE_STOPS_LEVEL)); }
+long GetStopsLevel() { return SymbolInfoInteger(_Symbol,SYMBOL_TRADE_STOPS_LEVEL); }
+
+//+------------------------------------------------------------------+
+//| Helper to convert Trade Retcode to String for logging            |
+//+------------------------------------------------------------------+
+string TradeRetcodeToString(uint retcode)
+  {
+   switch(retcode)
+     {
+      //--- successful codes
+      case TRADE_RETCODE_DONE:                    return("TRADE_RETCODE_DONE (Request accomplished)");
+      case TRADE_RETCODE_DONE_PARTIAL:            return("TRADE_RETCODE_DONE_PARTIAL (Request accomplished partially)");
+      case TRADE_RETCODE_PLACED:                  return("TRADE_RETCODE_PLACED (Order placed)");
+      //--- common errors
+      case TRADE_RETCODE_REJECT:                  return("TRADE_RETCODE_REJECT (Request rejected)");
+      case TRADE_RETCODE_TIMEOUT:                 return("TRADE_RETCODE_TIMEOUT (Request canceled by timeout)");
+      case TRADE_RETCODE_INVALID_VOLUME:          return("TRADE_RETCODE_INVALID_VOLUME (Invalid volume in request)");
+      case TRADE_RETCODE_INVALID_PRICE:           return("TRADE_RETCODE_INVALID_PRICE (Invalid price in request)");
+      case TRADE_RETCODE_INVALID_STOPS:           return("TRADE_RETCODE_INVALID_STOPS (Invalid stops in request)");
+      case TRADE_RETCODE_TRADE_DISABLED:          return("TRADE_RETCODE_TRADE_DISABLED (Trade is disabled)");
+      case TRADE_RETCODE_MARKET_CLOSED:           return("TRADE_RETCODE_MARKET_CLOSED (Market is closed)");
+      case TRADE_RETCODE_NO_MONEY:                return("TRADE_RETCODE_NO_MONEY (Not enough money to accomplish request)");
+      case TRADE_RETCODE_PRICE_CHANGED:           return("TRADE_RETCODE_PRICE_CHANGED (Price changed)");
+      case TRADE_RETCODE_PRICE_OFF:               return("TRADE_RETCODE_PRICE_OFF (There are no quotes to accomplish request)");
+      case TRADE_RETCODE_INVALID_ORDER:           return("TRADE_RETCODE_INVALID_ORDER (Invalid order's type or status for request)");
+      //--- other specific errors
+      case TRADE_RETCODE_INVALID_EXPIRATION:      return("TRADE_RETCODE_INVALID_EXPIRATION (Invalid expiration date in request)");
+      case TRADE_RETCODE_ORDER_CHANGED:           return("TRADE_RETCODE_ORDER_CHANGED (Order changed)");
+      case TRADE_RETCODE_TOO_MANY_REQUESTS:       return("TRADE_RETCODE_TOO_MANY_REQUESTS (Too many requests)");
+      case TRADE_RETCODE_NO_CHANGES:              return("TRADE_RETCODE_NO_CHANGES (No changes in request)");
+      case TRADE_RETCODE_SERVER_DISABLES_AT:      return("TRADE_RETCODE_SERVER_DISABLES_AT (Autotrading disabled by server)");
+      case TRADE_RETCODE_CLIENT_DISABLES_AT:      return("TRADE_RETCODE_CLIENT_DISABLES_AT (Autotrading disabled by client terminal)");
+      case TRADE_RETCODE_LOCKED:                  return("TRADE_RETCODE_LOCKED (Request locked for processing)");
+      case TRADE_RETCODE_FROZEN:                  return("TRADE_RETCODE_FROZEN (Order is frozen and cannot be changed)");
+      case TRADE_RETCODE_CONNECTION:              return("TRADE_RETCODE_CONNECTION (No connection to trade server)");
+      case TRADE_RETCODE_ONLY_REAL:               return("TRADE_RETCODE_ONLY_REAL (Operation is allowed only for live accounts)");
+      case TRADE_RETCODE_LIMIT_ORDERS:            return("TRADE_RETCODE_LIMIT_ORDERS (The number of pending orders has reached the limit)");
+      case TRADE_RETCODE_LIMIT_VOLUME:            return("TRADE_RETCODE_LIMIT_VOLUME (The volume of orders and positions for the symbol has reached the limit)");
+      case TRADE_RETCODE_INVALID_ACCOUNT:         return("TRADE_RETCODE_INVALID_ACCOUNT (Invalid account or account disabled)");
+      default:                                    return("UNKNOWN_TRADE_RETCODE ("+(string)retcode+")");
+     }
+  }
 //+------------------------------------------------------------------+
