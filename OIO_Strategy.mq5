@@ -273,13 +273,13 @@ long SendPendingOrder(ENUM_ORDER_TYPE type, double price, double sl, double tp, 
     request.comment = comment + " ID " + (string)currentOIO.id;
 
     Print("Attempting to place pending order: ", EnumToString(type), " Price=", DoubleToString(price,_Digits), " SL=", DoubleToString(sl,_Digits), " TP=", DoubleToString(tp,_Digits));
-    if(!OrderSend(request,result)) { Print("OrderSend failed for pending order: ", GetLastError(), " (Server RetCode:",result.retcode,") - ", result.message); return 0; }
+    if(!OrderSend(request,result)) { Print("OrderSend failed for pending order: ", GetLastError(), " (Server RetCode:",result.retcode,") - ", result.comment); return 0; }
 
     if(result.retcode == TRADE_RETCODE_DONE || result.retcode == TRADE_RETCODE_PLACED) { // Success codes
         Print("Pending order placed successfully. Ticket: ", (long)result.order, ". Server RetCode: ", result.retcode);
         return (long)result.order;
     } else {
-        Print("Pending order placement request returned non-success: ",result.retcode," - ",result.message);
+        Print("Pending order placement request returned non-success: ",result.retcode," - ",result.comment);
         return 0;
     }
 }
@@ -298,14 +298,14 @@ bool CancelOrder(long ticket, string reasonComment)
     request.order = ticket;
 
     Print("Attempting to cancel pending order: ", ticket, " (Reason: ", reasonComment, ")");
-    if(!OrderSend(request,result)) { Print("OrderSend failed for cancel request (Order:",ticket, "), Error: ", GetLastError(), " (Server RetCode:", result.retcode, ") - ", result.message); return false;}
+    if(!OrderSend(request,result)) { Print("OrderSend failed for cancel request (Order:",ticket, "), Error: ", GetLastError(), " (Server RetCode:", result.retcode, ") - ", result.comment); return false;}
 
     // For TRADE_ACTION_REMOVE, TRADE_RETCODE_DONE means successful removal.
     // Other codes like TRADE_RETCODE_INVALID_ORDER or specific errors if order doesn't exist might occur.
     if(result.retcode == TRADE_RETCODE_DONE) {
          Print("Cancel request for order ", ticket, " successful. Server RetCode: ", result.retcode); return true;
     } else {
-        Print("Cancel request for order ", ticket, " returned: ", result.retcode, " - ", result.message);
+        Print("Cancel request for order ", ticket, " returned: ", result.retcode, " - ", result.comment);
         // If the order was already gone (e.g. filled, cancelled prior), specific error codes might indicate this.
         // For simplicity, if not DONE, we consider it potentially problematic unless it's an "already gone" type error.
         // TRADE_RETCODE_INVALID_ORDER (10013), TRADE_RETCODE_REJECT (10006, if order no longer valid for cancellation)
@@ -501,12 +501,12 @@ bool ModifyPositionSLTP(long positionIdentifier, double newSL, double newTP)
     req.tp = newTP;
 
     Print("Attempting to modify SL/TP for Position Ticket:", req.position, " (Original OrderID:",positionIdentifier,") to NewSL:",DoubleToString(newSL,_Digits), ", NewTP:", DoubleToString(newTP,_Digits));
-    if(!OrderSend(req, res)) { Print("OrderSend failed for SL/TP modification (PosTicket:", req.position, "), Error: ", GetLastError(), " (Server RetCode:",res.retcode,") - ", res.message); return false; }
+    if(!OrderSend(req, res)) { Print("OrderSend failed for SL/TP modification (PosTicket:", req.position, "), Error: ", GetLastError(), " (Server RetCode:",res.retcode,") - ", res.comment); return false; }
 
     if(res.retcode == TRADE_RETCODE_DONE) { // For SLTP modification, DONE is the primary success code.
         Print("SL/TP modification request for Position Ticket:", req.position," successful. Server RetCode:",res.retcode); return true;
     } else {
-        Print("SL/TP modification request for Position Ticket:", req.position," returned: ", res.retcode, " - ", res.message); return false;
+        Print("SL/TP modification request for Position Ticket:", req.position," returned: ", res.retcode, " - ", res.comment); return false;
     }
 }
 
