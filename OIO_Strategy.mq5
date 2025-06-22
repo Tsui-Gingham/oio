@@ -170,8 +170,8 @@ void UpdateOIOStructure()
     double high2 = rates[2].high, low2 = rates[2].low;
     double high3 = rates[1].high, low3 = rates[1].low;
 
-    PrintFormat("Bar Data for OIO Check: B1(H:%.*f L:%.*f), B2(H:%.*f L:%.*f), B3(H:%.*f L:%.*f)",
-        _Digits, high1, _Digits, low1, _Digits, high2, _Digits, low2, _Digits, high3, _Digits, low3);
+    // PrintFormat("Bar Data for OIO Check: B1(H:%.*f L:%.*f), B2(H:%.*f L:%.*f), B3(H:%.*f L:%.*f)",
+    //     _Digits, high1, _Digits, low1, _Digits, high2, _Digits, low2, _Digits, high3, _Digits, low3); // User request: Commented out
 
     // OIO pattern conditions:
     // 1. Bar1's High >= Bar2's High AND Bar3's High >= Bar2's High
