@@ -1,0 +1,898 @@
+//+------------------------------------------------------------------+
+//|                                                    OIO_Strategy.mq5 |
+//|                                  Copyright 2024, MetaQuotes Ltd. |
+//|                                             https://www.mql5.com |
+//+------------------------------------------------------------------+
+#property copyright "Copyright 2024, MetaQuotes Ltd."
+#property link      "https://www.mql5.com"
+#property version   "1.00"
+#property description "OIO交易策略 - 基于三根K线结构的突破策略"
+
+// 包含必要的库
+#include <Trade\Trade.mqh>
+#include <Trade\OrderInfo.mqh>
+#include <Trade\PositionInfo.mqh>
+
+// 全局变量
+CTrade trade;                    // 交易对象
+COrderInfo orderInfo;           // 订单信息对象
+CPositionInfo positionInfo;     // 持仓信息对象
+
+// 策略参数
+input int    InpMagicNumber = 123456;     // 魔术数字
+input double InpLotSize = 1.0;            // 交易手数
+input int    InpStopLossTicks = 1;        // 止损tick数
+input int    InpTakeProfitTicks = 3;      // 止盈tick数
+input ENUM_TIMEFRAMES InpTimeframe = PERIOD_M5;    // 时间周期 (PERIOD_M5=5分钟, PERIOD_M3=3分钟)
+
+// OIO结构相关变量
+struct OIOStructure
+  {
+   datetime          startTime;         // OIO开始时间
+   datetime          endTime;           // OIO结束时间
+   double            high;               // OIO高点
+   double            low;                // OIO低点
+   double            midPoint;           // OIO中点
+   bool              isActive;             // OIO是否激活
+   ulong             firstOrderTicket;    // 第一张订单号
+   ulong             secondOrderTicket;   // 第二张订单号
+   bool              isLong;               // 是否为多头方向
+  };
+
+OIOStructure currentOIO;       // 当前OIO结构
+bool newBar = false;           // 新K线标志
+
+//+------------------------------------------------------------------+
+//| Expert initialization function                                   |
+//+------------------------------------------------------------------+
+int OnInit()
+  {
+// 设置交易参数
+   trade.SetExpertMagicNumber(InpMagicNumber);
+   trade.SetDeviationInPoints(10);
+   trade.SetTypeFilling(ORDER_FILLING_FOK);
+
+// 初始化OIO结构
+   ResetOIOStructure();
+
+   Print("OIO策略初始化完成");
+   return(INIT_SUCCEEDED);
+  }
+
+//+------------------------------------------------------------------+
+//| Expert deinitialization function                                 |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+  {
+// 清理所有未完成的订单
+   CancelAllOrders();
+   Print("OIO策略已停止");
+  }
+
+//+------------------------------------------------------------------+
+//| Expert tick function                                             |
+//+------------------------------------------------------------------+
+void OnTick()
+  {
+// 检查是否有新K线
+   if(!IsNewBar())
+      return;
+
+// 更新OIO结构
+   UpdateOIOStructure();
+
+// 检查OIO结构是否完成
+   if(IsOIOComplete())
+     {
+      // 在图表上标记OIO结构
+      DrawOIOStructure();
+
+      // 设置交易订单
+      PlaceOIOOrders();
+     }
+
+// 检查订单状态
+   CheckOrderStatus();
+  }
+
+//+------------------------------------------------------------------+
+//| 检查是否有新K线                                                  |
+//+------------------------------------------------------------------+
+bool IsNewBar()
+  {
+   static datetime lastBarTime = 0;
+   datetime currentBarTime = iTime(_Symbol, InpTimeframe, 0);
+
+   if(currentBarTime != lastBarTime)
+     {
+      lastBarTime = currentBarTime;
+      return true;
+     }
+   return false;
+  }
+
+//+------------------------------------------------------------------+
+//| 重置OIO结构                                                      |
+//+------------------------------------------------------------------+
+void ResetOIOStructure()
+  {
+   currentOIO.startTime = 0;
+   currentOIO.endTime = 0;
+   currentOIO.high = 0;
+   currentOIO.low = 0;
+   currentOIO.midPoint = 0;
+   currentOIO.isActive = false;
+   currentOIO.firstOrderTicket = 0;
+   currentOIO.secondOrderTicket = 0;
+   currentOIO.isLong = false;
+  }
+
+//+------------------------------------------------------------------+
+//| 更新OIO结构                                                      |
+//+------------------------------------------------------------------+
+void UpdateOIOStructure()
+  {
+// 获取最近三根K线的数据
+   double high1 = iHigh(_Symbol, InpTimeframe, 1);
+   double low1 = iLow(_Symbol, InpTimeframe, 1);
+   double high2 = iHigh(_Symbol, InpTimeframe, 2);
+   double low2 = iLow(_Symbol, InpTimeframe, 2);
+   double high3 = iHigh(_Symbol, InpTimeframe, 3);
+   double low3 = iLow(_Symbol, InpTimeframe, 3);
+
+   datetime time1 = iTime(_Symbol, InpTimeframe, 1);
+   datetime time2 = iTime(_Symbol, InpTimeframe, 2);
+   datetime time3 = iTime(_Symbol, InpTimeframe, 3);
+
+// 检查OIO结构条件
+   if(high1 > high2 && high3 > high2 && low1 < low2 && low3 < low2)
+     {
+      // 找到OIO结构
+      currentOIO.startTime = time3;
+      currentOIO.endTime = time1;
+      currentOIO.high = MathMax(high1, MathMax(high2, high3));
+      currentOIO.low = MathMin(low1, MathMin(low2, low3));
+      currentOIO.midPoint = (currentOIO.high + currentOIO.low) / 2;
+      currentOIO.isActive = true;
+
+      Print("发现OIO结构 - 高点: ", currentOIO.high, " 低点: ", currentOIO.low, " 中点: ", currentOIO.midPoint);
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| 检查OIO结构是否完成                                              |
+//+------------------------------------------------------------------+
+bool IsOIOComplete()
+  {
+   if(!currentOIO.isActive)
+      return false;
+
+// 检查第三根K线是否已经收盘
+   datetime currentTime = TimeCurrent();
+   datetime barEndTime = iTime(_Symbol, InpTimeframe, 0) + PeriodSeconds(InpTimeframe);
+
+   return (currentTime >= barEndTime);
+  }
+
+//+------------------------------------------------------------------+
+//| 在图表上绘制OIO结构                                              |
+//+------------------------------------------------------------------+
+void DrawOIOStructure()
+  {
+   string objectName = "OIO_" + TimeToString(currentOIO.startTime);
+
+// 创建矩形对象
+   ObjectCreate(0, objectName, OBJ_RECTANGLE, 0, currentOIO.startTime, currentOIO.low,
+                currentOIO.endTime, currentOIO.high);
+
+// 设置矩形属性
+   ObjectSetInteger(0, objectName, OBJPROP_COLOR, clrOrange);
+   ObjectSetInteger(0, objectName, OBJPROP_FILL, true);
+   ObjectSetInteger(0, objectName, OBJPROP_BACK, false);
+   ObjectSetInteger(0, objectName, OBJPROP_WIDTH, 2);
+
+   Print("OIO结构已标记在图表上");
+  }
+
+//+------------------------------------------------------------------+
+//| 设置OIO交易订单                                                  |
+//+------------------------------------------------------------------+
+void PlaceOIOOrders()
+  {
+   double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+
+// 计算订单价格
+   double longEntryPrice = currentOIO.high + tickSize;
+   double shortEntryPrice = currentOIO.low - tickSize;
+   double longStopLoss = currentOIO.low - tickSize;
+   double shortStopLoss = currentOIO.high + tickSize;
+   double longTakeProfit = longEntryPrice + (InpTakeProfitTicks * tickSize);
+   double shortTakeProfit = shortEntryPrice - (InpTakeProfitTicks * tickSize);
+
+// 设置多单
+   if(trade.BuyLimit(InpLotSize, longEntryPrice, _Symbol, longStopLoss, longTakeProfit,
+                     ORDER_TIME_GTC, 0, "OIO Long"))
+     {
+      currentOIO.firstOrderTicket = trade.ResultOrder();
+      Print("多单已设置 - 订单号: ", currentOIO.firstOrderTicket, " 价格: ", longEntryPrice);
+     }
+
+// 设置空单
+   if(trade.SellLimit(InpLotSize, shortEntryPrice, _Symbol, shortStopLoss, shortTakeProfit,
+                      ORDER_TIME_GTC, 0, "OIO Short"))
+     {
+      currentOIO.secondOrderTicket = trade.ResultOrder();
+      Print("空单已设置 - 订单号: ", currentOIO.secondOrderTicket, " 价格: ", shortEntryPrice);
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| 检查订单状态                                                      |
+//+------------------------------------------------------------------+
+void CheckOrderStatus()
+  {
+// 检查第一张订单是否被触发
+   if(currentOIO.firstOrderTicket > 0)
+     {
+      // 检查订单是否还存在
+      bool orderExists = false;
+      for(int i = 0; i < OrdersTotal(); i++)
+        {
+         if(orderInfo.SelectByIndex(i))
+           {
+            if(orderInfo.Ticket() == currentOIO.firstOrderTicket)
+              {
+               orderExists = true;
+               break;
+              }
+           }
+        }
+
+      // 如果订单不存在，说明已经被触发
+      if(!orderExists)
+        {
+         // 第一张订单被触发
+         HandleFirstOrderFilled();
+        }
+     }
+
+// 检查第二张订单是否被触发
+   if(currentOIO.secondOrderTicket > 0)
+     {
+      // 检查订单是否还存在
+      bool orderExists = false;
+      for(int i = 0; i < OrdersTotal(); i++)
+        {
+         if(orderInfo.SelectByIndex(i))
+           {
+            if(orderInfo.Ticket() == currentOIO.secondOrderTicket)
+              {
+               orderExists = true;
+               break;
+              }
+           }
+        }
+
+      // 如果订单不存在，说明已经被触发
+      if(!orderExists)
+        {
+         // 第二张订单被触发
+         HandleSecondOrderFilled();
+        }
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| 处理第一张订单被触发的情况                                        |
+//+------------------------------------------------------------------+
+void HandleFirstOrderFilled()
+  {
+// 取消另一张订单
+   if(currentOIO.secondOrderTicket > 0)
+     {
+      trade.OrderDelete(currentOIO.secondOrderTicket);
+      Print("取消对立订单: ", currentOIO.secondOrderTicket);
+     }
+
+// 通过检查持仓来确定交易方向
+   bool foundLongPosition = false;
+   bool foundShortPosition = false;
+
+   for(int i = 0; i < PositionsTotal(); i++)
+     {
+      if(positionInfo.SelectByIndex(i))
+        {
+         if(positionInfo.Magic() == InpMagicNumber && positionInfo.Symbol() == _Symbol)
+           {
+            if(positionInfo.PositionType() == POSITION_TYPE_BUY)
+              {
+               foundLongPosition = true;
+              }
+            else
+               if(positionInfo.PositionType() == POSITION_TYPE_SELL)
+                 {
+                  foundShortPosition = true;
+                 }
+           }
+        }
+     }
+
+   if(foundLongPosition)
+     {
+      currentOIO.isLong = true;
+      Print("多单被触发，设置第二张多单");
+
+      // 设置第二张多单
+      double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+      double secondEntryPrice = currentOIO.midPoint;
+      double stopLoss = currentOIO.low - tickSize;
+
+      if(trade.BuyLimit(InpLotSize, secondEntryPrice, _Symbol, stopLoss, 0,
+                        ORDER_TIME_GTC, 0, "OIO Second Long"))
+        {
+         currentOIO.secondOrderTicket = trade.ResultOrder();
+         Print("第二张多单已设置 - 订单号: ", currentOIO.secondOrderTicket);
+        }
+     }
+   else
+      if(foundShortPosition)
+        {
+         currentOIO.isLong = false;
+         Print("空单被触发，设置第二张空单");
+
+         // 设置第二张空单
+         double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+         double secondEntryPrice = currentOIO.midPoint;
+         double stopLoss = currentOIO.high + tickSize;
+
+         if(trade.SellLimit(InpLotSize, secondEntryPrice, _Symbol, stopLoss, 0,
+                            ORDER_TIME_GTC, 0, "OIO Second Short"))
+           {
+            currentOIO.secondOrderTicket = trade.ResultOrder();
+            Print("第二张空单已设置 - 订单号: ", currentOIO.secondOrderTicket);
+           }
+        }
+
+   currentOIO.firstOrderTicket = 0;
+  }
+
+//+------------------------------------------------------------------+
+//| 处理第二张订单被触发的情况                                        |
+//+------------------------------------------------------------------+
+void HandleSecondOrderFilled()
+  {
+// 调整止盈价格
+   AdjustTakeProfit();
+
+// 结束OIO交易
+   EndOIOTrade();
+  }
+
+//+------------------------------------------------------------------+
+//| 调整止盈价格                                                      |
+//+------------------------------------------------------------------+
+void AdjustTakeProfit()
+  {
+// 获取当前持仓
+   for(int i = 0; i < PositionsTotal(); i++)
+     {
+      if(positionInfo.SelectByIndex(i))
+        {
+         if(positionInfo.Magic() == InpMagicNumber)
+           {
+            double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+            double currentPrice = positionInfo.PriceOpen();
+            double volume = positionInfo.Volume();
+
+            // 计算平均成本价
+            double totalCost = 0;
+            double totalVolume = 0;
+
+            for(int j = 0; j < PositionsTotal(); j++)
+              {
+               if(positionInfo.SelectByIndex(j))
+                 {
+                  if(positionInfo.Magic() == InpMagicNumber &&
+                     positionInfo.Symbol() == _Symbol)
+                    {
+                     totalCost += positionInfo.PriceOpen() * positionInfo.Volume();
+                     totalVolume += positionInfo.Volume();
+                    }
+                 }
+              }
+
+            double averagePrice = totalCost / totalVolume;
+
+            // 设置新的止盈价格
+            if(currentOIO.isLong)
+              {
+               double newTakeProfit = averagePrice + (InpTakeProfitTicks * tickSize);
+               trade.PositionModify(positionInfo.Ticket(), 0, newTakeProfit);
+               Print("调整多单止盈价格至: ", newTakeProfit);
+              }
+            else
+              {
+               double newTakeProfit = averagePrice - (InpTakeProfitTicks * tickSize);
+               trade.PositionModify(positionInfo.Ticket(), 0, newTakeProfit);
+               Print("调整空单止盈价格至: ", newTakeProfit);
+              }
+           }
+        }
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| 结束OIO交易                                                       |
+//+------------------------------------------------------------------+
+void EndOIOTrade()
+  {
+   Print("OIO交易结束");
+   ResetOIOStructure();
+  }
+
+//+------------------------------------------------------------------+
+//| 取消所有订单                                                      |
+//+------------------------------------------------------------------+
+void CancelAllOrders()
+  {
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+     {
+      if(orderInfo.SelectByIndex(i))
+        {
+         if(orderInfo.Magic() == InpMagicNumber)
+           {
+            trade.OrderDelete(orderInfo.Ticket());
+           }
+        }
+     }
+  }
+//+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
+//|                                                    OIO_Strategy.mq5 |
+//|                                  Copyright 2024, MetaQuotes Ltd. |
+//|                                             https://www.mql5.com |
+//+------------------------------------------------------------------+
+#property copyright "Copyright 2024, MetaQuotes Ltd."
+#property link      "https://www.mql5.com"
+#property version   "1.00"
+#property description "OIO交易策略 - 基于三根K线结构的突破策略"
+
+// 包含必要的库
+#include <Trade\Trade.mqh>
+#include <Trade\OrderInfo.mqh>
+#include <Trade\PositionInfo.mqh>
+
+// 全局变量
+CTrade trade;                    // 交易对象
+COrderInfo orderInfo;           // 订单信息对象
+CPositionInfo positionInfo;     // 持仓信息对象
+
+// 策略参数
+input int    InpMagicNumber = 123456;     // 魔术数字
+input double InpLotSize = 1.0;            // 交易手数
+input int    InpStopLossTicks = 1;        // 止损tick数
+input int    InpTakeProfitTicks = 3;      // 止盈tick数
+input ENUM_TIMEFRAMES InpTimeframe = PERIOD_M5;    // 时间周期 (PERIOD_M5=5分钟, PERIOD_M3=3分钟)
+
+// OIO结构相关变量
+struct OIOStructure
+  {
+   datetime          startTime;         // OIO开始时间
+   datetime          endTime;           // OIO结束时间
+   double            high;               // OIO高点
+   double            low;                // OIO低点
+   double            midPoint;           // OIO中点
+   bool              isActive;             // OIO是否激活
+   ulong             firstOrderTicket;    // 第一张订单号
+   ulong             secondOrderTicket;   // 第二张订单号
+   bool              isLong;               // 是否为多头方向
+  };
+
+OIOStructure currentOIO;       // 当前OIO结构
+bool newBar = false;           // 新K线标志
+
+//+------------------------------------------------------------------+
+//| Expert initialization function                                   |
+//+------------------------------------------------------------------+
+int OnInit()
+  {
+// 设置交易参数
+   trade.SetExpertMagicNumber(InpMagicNumber);
+   trade.SetDeviationInPoints(10);
+   trade.SetTypeFilling(ORDER_FILLING_FOK);
+
+// 初始化OIO结构
+   ResetOIOStructure();
+
+   Print("OIO策略初始化完成");
+   return(INIT_SUCCEEDED);
+  }
+
+//+------------------------------------------------------------------+
+//| Expert deinitialization function                                 |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+  {
+// 清理所有未完成的订单
+   CancelAllOrders();
+   Print("OIO策略已停止");
+  }
+
+//+------------------------------------------------------------------+
+//| Expert tick function                                             |
+//+------------------------------------------------------------------+
+void OnTick()
+  {
+// 检查是否有新K线
+   if(!IsNewBar())
+      return;
+
+// 更新OIO结构
+   UpdateOIOStructure();
+
+// 检查OIO结构是否完成
+   if(IsOIOComplete())
+     {
+      // 在图表上标记OIO结构
+      DrawOIOStructure();
+
+      // 设置交易订单
+      PlaceOIOOrders();
+     }
+
+// 检查订单状态
+   CheckOrderStatus();
+  }
+
+//+------------------------------------------------------------------+
+//| 检查是否有新K线                                                  |
+//+------------------------------------------------------------------+
+bool IsNewBar()
+  {
+   static datetime lastBarTime = 0;
+   datetime currentBarTime = iTime(_Symbol, InpTimeframe, 0);
+
+   if(currentBarTime != lastBarTime)
+     {
+      lastBarTime = currentBarTime;
+      return true;
+     }
+   return false;
+  }
+
+//+------------------------------------------------------------------+
+//| 重置OIO结构                                                      |
+//+------------------------------------------------------------------+
+void ResetOIOStructure()
+  {
+   currentOIO.startTime = 0;
+   currentOIO.endTime = 0;
+   currentOIO.high = 0;
+   currentOIO.low = 0;
+   currentOIO.midPoint = 0;
+   currentOIO.isActive = false;
+   currentOIO.firstOrderTicket = 0;
+   currentOIO.secondOrderTicket = 0;
+   currentOIO.isLong = false;
+  }
+
+//+------------------------------------------------------------------+
+//| 更新OIO结构                                                      |
+//+------------------------------------------------------------------+
+void UpdateOIOStructure()
+  {
+// 获取最近三根K线的数据
+   double high1 = iHigh(_Symbol, InpTimeframe, 1);
+   double low1 = iLow(_Symbol, InpTimeframe, 1);
+   double high2 = iHigh(_Symbol, InpTimeframe, 2);
+   double low2 = iLow(_Symbol, InpTimeframe, 2);
+   double high3 = iHigh(_Symbol, InpTimeframe, 3);
+   double low3 = iLow(_Symbol, InpTimeframe, 3);
+
+   datetime time1 = iTime(_Symbol, InpTimeframe, 1);
+   datetime time2 = iTime(_Symbol, InpTimeframe, 2);
+   datetime time3 = iTime(_Symbol, InpTimeframe, 3);
+
+// 检查OIO结构条件
+   if(high1 > high2 && high3 > high2 && low1 < low2 && low3 < low2)
+     {
+      // 找到OIO结构
+      currentOIO.startTime = time3;
+      currentOIO.endTime = time1;
+      currentOIO.high = MathMax(high1, MathMax(high2, high3));
+      currentOIO.low = MathMin(low1, MathMin(low2, low3));
+      currentOIO.midPoint = (currentOIO.high + currentOIO.low) / 2;
+      currentOIO.isActive = true;
+
+      Print("发现OIO结构 - 高点: ", currentOIO.high, " 低点: ", currentOIO.low, " 中点: ", currentOIO.midPoint);
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| 检查OIO结构是否完成                                              |
+//+------------------------------------------------------------------+
+bool IsOIOComplete()
+  {
+   if(!currentOIO.isActive)
+      return false;
+
+// 检查第三根K线是否已经收盘
+   datetime currentTime = TimeCurrent();
+   datetime barEndTime = iTime(_Symbol, InpTimeframe, 0) + PeriodSeconds(InpTimeframe);
+
+   return (currentTime >= barEndTime);
+  }
+
+//+------------------------------------------------------------------+
+//| 在图表上绘制OIO结构                                              |
+//+------------------------------------------------------------------+
+void DrawOIOStructure()
+  {
+   string objectName = "OIO_" + TimeToString(currentOIO.startTime);
+
+// 创建矩形对象
+   ObjectCreate(0, objectName, OBJ_RECTANGLE, 0, currentOIO.startTime, currentOIO.low,
+                currentOIO.endTime, currentOIO.high);
+
+// 设置矩形属性
+   ObjectSetInteger(0, objectName, OBJPROP_COLOR, clrOrange);
+   ObjectSetInteger(0, objectName, OBJPROP_FILL, true);
+   ObjectSetInteger(0, objectName, OBJPROP_BACK, false);
+   ObjectSetInteger(0, objectName, OBJPROP_WIDTH, 2);
+
+   Print("OIO结构已标记在图表上");
+  }
+
+//+------------------------------------------------------------------+
+//| 设置OIO交易订单                                                  |
+//+------------------------------------------------------------------+
+void PlaceOIOOrders()
+  {
+   double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+
+// 计算订单价格
+   double longEntryPrice = currentOIO.high + tickSize;
+   double shortEntryPrice = currentOIO.low - tickSize;
+   double longStopLoss = currentOIO.low - tickSize;
+   double shortStopLoss = currentOIO.high + tickSize;
+   double longTakeProfit = longEntryPrice + (InpTakeProfitTicks * tickSize);
+   double shortTakeProfit = shortEntryPrice - (InpTakeProfitTicks * tickSize);
+
+// 设置多单
+   if(trade.BuyLimit(InpLotSize, longEntryPrice, _Symbol, longStopLoss, longTakeProfit,
+                     ORDER_TIME_GTC, 0, "OIO Long"))
+     {
+      currentOIO.firstOrderTicket = trade.ResultOrder();
+      Print("多单已设置 - 订单号: ", currentOIO.firstOrderTicket, " 价格: ", longEntryPrice);
+     }
+
+// 设置空单
+   if(trade.SellLimit(InpLotSize, shortEntryPrice, _Symbol, shortStopLoss, shortTakeProfit,
+                      ORDER_TIME_GTC, 0, "OIO Short"))
+     {
+      currentOIO.secondOrderTicket = trade.ResultOrder();
+      Print("空单已设置 - 订单号: ", currentOIO.secondOrderTicket, " 价格: ", shortEntryPrice);
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| 检查订单状态                                                      |
+//+------------------------------------------------------------------+
+void CheckOrderStatus()
+  {
+// 检查第一张订单是否被触发
+   if(currentOIO.firstOrderTicket > 0)
+     {
+      // 检查订单是否还存在
+      bool orderExists = false;
+      for(int i = 0; i < OrdersTotal(); i++)
+        {
+         if(orderInfo.SelectByIndex(i))
+           {
+            if(orderInfo.Ticket() == currentOIO.firstOrderTicket)
+              {
+               orderExists = true;
+               break;
+              }
+           }
+        }
+
+      // 如果订单不存在，说明已经被触发
+      if(!orderExists)
+        {
+         // 第一张订单被触发
+         HandleFirstOrderFilled();
+        }
+     }
+
+// 检查第二张订单是否被触发
+   if(currentOIO.secondOrderTicket > 0)
+     {
+      // 检查订单是否还存在
+      bool orderExists = false;
+      for(int i = 0; i < OrdersTotal(); i++)
+        {
+         if(orderInfo.SelectByIndex(i))
+           {
+            if(orderInfo.Ticket() == currentOIO.secondOrderTicket)
+              {
+               orderExists = true;
+               break;
+              }
+           }
+        }
+
+      // 如果订单不存在，说明已经被触发
+      if(!orderExists)
+        {
+         // 第二张订单被触发
+         HandleSecondOrderFilled();
+        }
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| 处理第一张订单被触发的情况                                        |
+//+------------------------------------------------------------------+
+void HandleFirstOrderFilled()
+  {
+// 取消另一张订单
+   if(currentOIO.secondOrderTicket > 0)
+     {
+      trade.OrderDelete(currentOIO.secondOrderTicket);
+      Print("取消对立订单: ", currentOIO.secondOrderTicket);
+     }
+
+// 通过检查持仓来确定交易方向
+   bool foundLongPosition = false;
+   bool foundShortPosition = false;
+
+   for(int i = 0; i < PositionsTotal(); i++)
+     {
+      if(positionInfo.SelectByIndex(i))
+        {
+         if(positionInfo.Magic() == InpMagicNumber && positionInfo.Symbol() == _Symbol)
+           {
+            if(positionInfo.PositionType() == POSITION_TYPE_BUY)
+              {
+               foundLongPosition = true;
+              }
+            else
+               if(positionInfo.PositionType() == POSITION_TYPE_SELL)
+                 {
+                  foundShortPosition = true;
+                 }
+           }
+        }
+     }
+
+   if(foundLongPosition)
+     {
+      currentOIO.isLong = true;
+      Print("多单被触发，设置第二张多单");
+
+      // 设置第二张多单
+      double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+      double secondEntryPrice = currentOIO.midPoint;
+      double stopLoss = currentOIO.low - tickSize;
+
+      if(trade.BuyLimit(InpLotSize, secondEntryPrice, _Symbol, stopLoss, 0,
+                        ORDER_TIME_GTC, 0, "OIO Second Long"))
+        {
+         currentOIO.secondOrderTicket = trade.ResultOrder();
+         Print("第二张多单已设置 - 订单号: ", currentOIO.secondOrderTicket);
+        }
+     }
+   else
+      if(foundShortPosition)
+        {
+         currentOIO.isLong = false;
+         Print("空单被触发，设置第二张空单");
+
+         // 设置第二张空单
+         double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+         double secondEntryPrice = currentOIO.midPoint;
+         double stopLoss = currentOIO.high + tickSize;
+
+         if(trade.SellLimit(InpLotSize, secondEntryPrice, _Symbol, stopLoss, 0,
+                            ORDER_TIME_GTC, 0, "OIO Second Short"))
+           {
+            currentOIO.secondOrderTicket = trade.ResultOrder();
+            Print("第二张空单已设置 - 订单号: ", currentOIO.secondOrderTicket);
+           }
+        }
+
+   currentOIO.firstOrderTicket = 0;
+  }
+
+//+------------------------------------------------------------------+
+//| 处理第二张订单被触发的情况                                        |
+//+------------------------------------------------------------------+
+void HandleSecondOrderFilled()
+  {
+// 调整止盈价格
+   AdjustTakeProfit();
+
+// 结束OIO交易
+   EndOIOTrade();
+  }
+
+//+------------------------------------------------------------------+
+//| 调整止盈价格                                                      |
+//+------------------------------------------------------------------+
+void AdjustTakeProfit()
+  {
+// 获取当前持仓
+   for(int i = 0; i < PositionsTotal(); i++)
+     {
+      if(positionInfo.SelectByIndex(i))
+        {
+         if(positionInfo.Magic() == InpMagicNumber)
+           {
+            double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+            double currentPrice = positionInfo.PriceOpen();
+            double volume = positionInfo.Volume();
+
+            // 计算平均成本价
+            double totalCost = 0;
+            double totalVolume = 0;
+
+            for(int j = 0; j < PositionsTotal(); j++)
+              {
+               if(positionInfo.SelectByIndex(j))
+                 {
+                  if(positionInfo.Magic() == InpMagicNumber &&
+                     positionInfo.Symbol() == _Symbol)
+                    {
+                     totalCost += positionInfo.PriceOpen() * positionInfo.Volume();
+                     totalVolume += positionInfo.Volume();
+                    }
+                 }
+              }
+
+            double averagePrice = totalCost / totalVolume;
+
+            // 设置新的止盈价格
+            if(currentOIO.isLong)
+              {
+               double newTakeProfit = averagePrice + (InpTakeProfitTicks * tickSize);
+               trade.PositionModify(positionInfo.Ticket(), 0, newTakeProfit);
+               Print("调整多单止盈价格至: ", newTakeProfit);
+              }
+            else
+              {
+               double newTakeProfit = averagePrice - (InpTakeProfitTicks * tickSize);
+               trade.PositionModify(positionInfo.Ticket(), 0, newTakeProfit);
+               Print("调整空单止盈价格至: ", newTakeProfit);
+              }
+           }
+        }
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| 结束OIO交易                                                       |
+//+------------------------------------------------------------------+
+void EndOIOTrade()
+  {
+   Print("OIO交易结束");
+   ResetOIOStructure();
+  }
+
+//+------------------------------------------------------------------+
+//| 取消所有订单                                                      |
+//+------------------------------------------------------------------+
+void CancelAllOrders()
+  {
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+     {
+      if(orderInfo.SelectByIndex(i))
+        {
+         if(orderInfo.Magic() == InpMagicNumber)
+           {
+            trade.OrderDelete(orderInfo.Ticket());
+           }
+        }
+     }
+  }
+//+------------------------------------------------------------------+
