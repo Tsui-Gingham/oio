@@ -658,9 +658,9 @@ long GetStopsLevel() { return SymbolInfoInteger(_Symbol,SYMBOL_TRADE_STOPS_LEVEL
 //+------------------------------------------------------------------+
 //| Helper to convert Trade Retcode to String for logging            |
 //+------------------------------------------------------------------+
-string TradeRetcodeToString(uint retcode)
+string TradeRetcodeToString(int retcode) // Changed uint to int
   {
-   switch(retcode)
+   switch(retcode) // retcode is now int, matching ENUM_TRADE_RETCODE underlying type
      {
       //--- successful codes
       case TRADE_RETCODE_DONE:                    return("TRADE_RETCODE_DONE (Request accomplished)");
